@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AI Chat · Xano MCP</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="top-bar">
+        <div class="brand">
+          <span class="brand-title">Xano MCP Chat</span>
+          <span class="brand-sub">Claude &amp; Gemini</span>
+        </div>
+        <div class="provider-toggle" role="group" aria-label="AI provider">
+          <button type="button" class="toggle-btn active" data-provider="anthropic">
+            Anthropic
+          </button>
+          <button type="button" class="toggle-btn" data-provider="gemini">
+            Gemini
+          </button>
+        </div>
+        <div class="active-provider" aria-live="polite">
+          Active: <strong id="active-label">Claude</strong>
+        </div>
+      </header>
+
+      <main class="chat-panel" id="chat-panel" aria-label="Messages"></main>
+
+      <footer class="composer">
+        <div class="typing-row" id="typing-row" hidden>
+          <span class="typing-dots" aria-hidden="true"></span>
+          <span id="typing-label">Thinking…</span>
+        </div>
+        <form class="input-row" id="chat-form">
+          <label class="sr-only" for="message-input">Message</label>
+          <textarea
+            id="message-input"
+            rows="1"
+            placeholder="Message…"
+            autocomplete="off"
+            required
+          ></textarea>
+          <button type="submit" id="send-btn">Send</button>
+        </form>
+      </footer>
+    </div>
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>
