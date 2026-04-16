@@ -8,9 +8,38 @@ function geminiModelId() {
 }
 
 function parseRetryAfterSeconds(message) {
-  const m = String(message).match(/retry in ([\d.]+)\s*s/i);
-  if (m) return Math.min(120, Math.ceil(parseFloat(m[1]) + 1));
+  const m = String(message);
+  const prose = m.match(/retry in ([\d.]+)\s*s/i);
+  if (prose) return Math.min(120, Math.ceil(parseFloat(prose[1]) + 1));
+  const jsonDelay = m.match(/"retryDelay"\s*:\s*"(\d+)s"/i);
+  if (jsonDelay) return Math.min(120, parseInt(jsonDelay[1], 10) + 1);
   return null;
+}
+
+/**
+ * True only for **per-day** (or explicit per-day project/model) caps.
+ * Do NOT match generic `free_tier` / `generate_content_free_tier_requests` alone — those
+ * strings also appear on **per-minute** free-tier 429s where waiting and retrying works
+ * (same behavior as a single Postman call after a short pause).
+ */
+function isNonRetryableGeminiQuotaError(message) {
+  const m = String(message);
+  return (
+    m.includes("GenerateRequestsPerDay") ||
+    m.includes("PerDayPerProjectPerModel") ||
+    m.includes("generate_requests_per_day")
+  );
+}
+
+function userFacingGeminiQuotaMessage(rawMessage) {
+  const model = geminiModelId();
+  return [
+    "Gemini API quota limit reached for your Google Cloud / AI Studio project.",
+    `Model in use: ${model} (set GEMINI_MODEL in backend/.env to switch).`,
+    "Free tier includes a small number of requests per day per model; when that is exhausted, retries after a few seconds will not succeed until the quota resets or you enable billing.",
+    "Details: https://ai.google.dev/gemini-api/docs/rate-limits",
+    `Technical: ${String(rawMessage).slice(0, 500)}${String(rawMessage).length > 500 ? "…" : ""}`,
+  ].join(" ");
 }
 
 async function withGemini429Retry(label, fn, maxAttempts = 4) {
@@ -25,6 +54,9 @@ async function withGemini429Retry(label, fn, maxAttempts = 4) {
         msg.includes("429") ||
         msg.includes("Too Many Requests") ||
         msg.includes("RESOURCE_EXHAUSTED");
+      if (is429 && isNonRetryableGeminiQuotaError(msg)) {
+        throw new Error(userFacingGeminiQuotaMessage(msg));
+      }
       if (!is429 || attempt === maxAttempts - 1) {
         throw err;
       }
@@ -164,7 +196,7 @@ function extractTextFromResponse(response) {
  * @param {Array<{ role: string, content: string }>} conversationHistory
  */
 export async function chat(userMessage, conversationHistory) {
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = process.env.GEMINI_API_KEY?.trim();
   if (!apiKey) {
     throw new Error("GEMINI_API_KEY is not configured");
   }

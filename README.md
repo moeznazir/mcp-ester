@@ -29,7 +29,8 @@ Full-stack chat app that talks to a **Xano MCP** (Model Context Protocol) server
    | `ANTHROPIC_API_KEY` | From [Anthropic Console](https://console.anthropic.com/) |
    | `GEMINI_API_KEY` | From [Google AI Studio](https://aistudio.google.com/apikey) |
    | `XANO_MCP_URL` | Your Xano MCP HTTP URL (e.g. `https://your-workspace.xano.io/mcp`) |
-   | `XANO_MCP_TOKEN` | Optional. If set, requests include `Authorization: Bearer …`. Omit when your MCP route needs no token. |
+   | `XANO_MCP_TOKEN` | Optional static Xano bearer. Omit if you use login below — then the **login access token** is sent as the same MCP `Authorization: Bearer` (for tool APIs). |
+   | `XANO_AUTH_ENDPOINT`, `XANO_USERNAME`, `XANO_PASSWORD` | Optional **password login**: that access token becomes the MCP bearer (same as `your_xano_bearer_token`). Optional `TOKEN_EXPIRY_SECONDS`, `XANO_AUTH_LOGIN_BODY`, `XANO_REFRESH_*`. |
    | `PORT` | HTTP port for Express (default `3000`) |
 
    `dotenv` loads **`backend/.env`** when you start the server from the project root (see `server.js`).

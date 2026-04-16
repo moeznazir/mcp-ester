@@ -2,8 +2,20 @@
  * Shared MCP client: JSON-RPC 2.0 over HTTP to Xano MCP.
  */
 
+import crypto from "node:crypto";
+import {
+  ensureXanoAccessToken,
+  getLoginSessionBearer,
+  invalidateXanoLoginSession,
+  loginSessionEnabled,
+} from "./xanoLoginSession.js";
+import { getClientMcpBearer } from "./mcpRequestContext.js";
+
 let toolsCache = null;
 let toolsCachePromise = null;
+
+/** Fingerprint of which Bearer is used so MCP session/tools cache reset on auth change. */
+let mcpAuthFingerprint = null;
 
 /** @type {string | null} */
 let mcpSessionId = null;
@@ -19,14 +31,35 @@ function resetMcpSession() {
   mcpInitPromise = null;
 }
 
+/**
+ * Effective MCP bearer (priority):
+ * 1) Bearer from the browser request (user login)
+ * 2) Server XANO_AUTH_* session token
+ * 3) Static `XANO_MCP_TOKEN`
+ */
 function getMcpConfig() {
   const url = process.env.XANO_MCP_URL;
-  const token = process.env.XANO_MCP_TOKEN;
   if (!url || !String(url).trim()) {
     throw new Error("XANO_MCP_URL must be set");
   }
-  const trimmedToken = token && String(token).trim() ? String(token).trim() : null;
-  return { url: String(url).trim(), token: trimmedToken };
+  const staticToken =
+    process.env.XANO_MCP_TOKEN && String(process.env.XANO_MCP_TOKEN).trim()
+      ? String(process.env.XANO_MCP_TOKEN).trim()
+      : null;
+  const clientBearer = getClientMcpBearer()?.trim() || null;
+  const loginBearer = getLoginSessionBearer()?.trim() || null;
+  const token = clientBearer || loginBearer || staticToken || null;
+
+  const tier = clientBearer ? "c" : loginBearer ? "l" : staticToken ? "s" : "n";
+  const fp = `${tier}:${crypto.createHash("sha256").update(token || "").digest("hex")}`;
+  if (mcpAuthFingerprint !== fp) {
+    mcpAuthFingerprint = fp;
+    resetMcpSession();
+    toolsCache = null;
+    toolsCachePromise = null;
+  }
+
+  return { url: String(url).trim(), token };
 }
 
 function nextRpcId() {
@@ -95,17 +128,41 @@ function parseMcpResponseBody(text, contentType) {
 
 function buildMcpHeaders() {
   const { token } = getMcpConfig();
+
   const headers = {
     "Content-Type": "application/json",
     Accept: "application/json, text/event-stream",
   };
   if (token) {
     headers.Authorization = `Bearer ${token}`;
+    if (process.env.MCP_DEBUG_PRINT_ACCESS_TOKEN === "1") {
+      console.warn(
+        "[backend/mcpService] MCP_DEBUG_PRINT_ACCESS_TOKEN=1 → MCP Bearer length:",
+        token.length
+      );
+    }
   }
   if (mcpSessionId) {
     headers["Mcp-Session-Id"] = mcpSessionId;
   }
   return headers;
+}
+
+/**
+ * @param {() => Promise<Response>} doFetch
+ */
+async function fetchMcpWith401Reauth(doFetch) {
+  let res = await doFetch();
+  if (
+    res.status === 401 &&
+    loginSessionEnabled() &&
+    !getClientMcpBearer()?.trim()
+  ) {
+    invalidateXanoLoginSession();
+    await ensureXanoAccessToken();
+    res = await doFetch();
+  }
+  return res;
 }
 
 function readSessionIdFromResponse(res, json) {
@@ -132,7 +189,9 @@ async function ensureMcpSession() {
     mcpInitPromise = (async () => {
       try {
         const { url } = getMcpConfig();
-        const baseHeaders = buildMcpHeaders();
+        if (!getClientMcpBearer()?.trim()) {
+          await ensureXanoAccessToken();
+        }
 
         const initBody = {
           jsonrpc: "2.0",
@@ -150,11 +209,13 @@ async function ensureMcpSession() {
 
         let res;
         try {
-          res = await fetch(url, {
-            method: "POST",
-            headers: baseHeaders,
-            body: JSON.stringify(initBody),
-          });
+          res = await fetchMcpWith401Reauth(() =>
+            fetch(url, {
+              method: "POST",
+              headers: buildMcpHeaders(),
+              body: JSON.stringify(initBody),
+            })
+          );
         } catch (err) {
           throw new Error(
             `MCP server unreachable: ${err instanceof Error ? err.message : String(err)}`
@@ -189,7 +250,9 @@ async function ensureMcpSession() {
         const sid = readSessionIdFromResponse(res, initJson);
         if (sid) mcpSessionId = sid;
 
-        const notifHeaders = buildMcpHeaders();
+        if (!getClientMcpBearer()?.trim()) {
+          await ensureXanoAccessToken();
+        }
         const notifBody = {
           jsonrpc: "2.0",
           method: "notifications/initialized",
@@ -197,11 +260,13 @@ async function ensureMcpSession() {
         };
 
         try {
-          res = await fetch(url, {
-            method: "POST",
-            headers: notifHeaders,
-            body: JSON.stringify(notifBody),
-          });
+          res = await fetchMcpWith401Reauth(() =>
+            fetch(url, {
+              method: "POST",
+              headers: buildMcpHeaders(),
+              body: JSON.stringify(notifBody),
+            })
+          );
         } catch (err) {
           throw new Error(
             `MCP server unreachable (initialized): ${err instanceof Error ? err.message : String(err)}`
@@ -257,15 +322,19 @@ async function mcpRequestOnce(method, params = {}) {
     params,
   };
 
-  const headers = buildMcpHeaders();
+  if (!getClientMcpBearer()?.trim()) {
+    await ensureXanoAccessToken();
+  }
 
   let res;
   try {
-    res = await fetch(url, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body),
-    });
+    res = await fetchMcpWith401Reauth(() =>
+      fetch(url, {
+        method: "POST",
+        headers: buildMcpHeaders(),
+        body: JSON.stringify(body),
+      })
+    );
   } catch (err) {
     throw new Error(
       `MCP server unreachable: ${err instanceof Error ? err.message : String(err)}`
@@ -355,6 +424,40 @@ function stringifyToolResult(result) {
   } catch {
     return String(result);
   }
+}
+
+/**
+ * For browser DevTools debugging only: same Bearer value sent on MCP requests
+ * (`Authorization: Bearer <XANO_MCP_TOKEN>`). Requires `DEBUG_BROWSER_MCP_TOKEN=1` in backend/.env.
+ * @returns {{ mcpAuthorizationBearer: string | null, hasBearer: boolean } | null}
+ */
+export function getMcpDebugAuthPayload() {
+  if (process.env.DEBUG_BROWSER_MCP_TOKEN !== "1") return null;
+  const { token } = getMcpConfig();
+  const clientBearer = getClientMcpBearer()?.trim() || null;
+  const loginBearer = getLoginSessionBearer();
+  const staticOnly =
+    process.env.XANO_MCP_TOKEN && String(process.env.XANO_MCP_TOKEN).trim()
+      ? String(process.env.XANO_MCP_TOKEN).trim()
+      : null;
+  let source = "none";
+  if (token) {
+    if (clientBearer && token === clientBearer) {
+      source = "client_request";
+    } else {
+      source =
+        loginSessionEnabled() && loginBearer && token === loginBearer
+          ? "login_session"
+          : staticOnly && token === staticOnly
+            ? "XANO_MCP_TOKEN"
+            : "merged";
+    }
+  }
+  return {
+    mcpAuthorizationBearer: token || null,
+    hasBearer: Boolean(token && String(token).trim()),
+    source,
+  };
 }
 
 /**

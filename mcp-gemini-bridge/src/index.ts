@@ -1,7 +1,11 @@
-export { loadConfig, authHeaders } from "./config.js";
+export { loadConfig, authHeaders, mcpStaticHeaders, maskUrl } from "./config.js";
 export type { BridgeEnv, McpTransportName, XanoAuthMode } from "./config.js";
 export { GeminiMcpBridge } from "./geminiMcpBridge.js";
 export { createMcpTransport } from "./transport.js";
+export { AuthSession } from "./authSession.js";
+export { createAuthenticatedFetch } from "./authenticatedFetch.js";
+export { loginWithPassword, refreshAccessToken } from "./xanoAuthClient.js";
+export { redactSecrets } from "./errorSanitize.js";
 export { XanoMcpClient } from "./xanoMcpClient.js";
 export { mcpToolsToGeminiDeclarations } from "./schemaMapper.js";
 export { callToolResultToGeminiResponse } from "./responseMapper.js";
