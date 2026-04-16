@@ -1,5 +1,6 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { log } from "./logger.js";
+import { redactSecrets } from "./errorSanitize.js";
 
 /**
  * Turn an MCP {@link CallToolResult} into a plain object suitable for
@@ -25,7 +26,7 @@ export function callToolResultToGeminiResponse(result: CallToolResult): Record<s
   }
 
   const out: Record<string, unknown> = {
-    result: textParts.join("\n").trim() || "(empty MCP tool result)",
+    result: redactSecrets(textParts.join("\n").trim() || "(empty MCP tool result)"),
   };
 
   if (result.isError) {

@@ -6,6 +6,8 @@ import { mcpToolsToGeminiDeclarations } from "./schemaMapper.js";
 import { callToolResultToGeminiResponse } from "./responseMapper.js";
 import { log } from "./logger.js";
 import { withGemini429Retry } from "./geminiRetry.js";
+import { AuthSession } from "./authSession.js";
+import { redactSecrets } from "./errorSanitize.js";
 
 const MAX_TOOL_ROUNDS = 32;
 
@@ -21,8 +23,17 @@ export class GeminiMcpBridge {
   async chat(userMessage: string): Promise<string> {
     log.step("bridge.chat.start", { messagePreview: userMessage.slice(0, 120) });
 
-    const transport = createMcpTransport(this.cfg);
-    await this.mcp.connect(transport);
+    const authSession = this.cfg.xanoAuthEndpoint ? new AuthSession(this.cfg) : null;
+    const transport = createMcpTransport(this.cfg, authSession);
+
+    try {
+      await this.mcp.connect(transport);
+    } catch (e) {
+      const msg = redactSecrets(e instanceof Error ? e.message : String(e));
+      throw new Error(
+        `MCP connection failed: ${msg}. If login is enabled, verify XANO_AUTH_ENDPOINT and credentials.`
+      );
+    }
 
     try {
       const tools = await this.mcp.listTools();
@@ -62,7 +73,13 @@ export class GeminiMcpBridge {
         }[] = [];
 
         for (const call of calls) {
-          const mcpResult = await this.mcp.callTool(call.name, call.args);
+          let mcpResult;
+          try {
+            mcpResult = await this.mcp.callTool(call.name, call.args);
+          } catch (e) {
+            const msg = redactSecrets(e instanceof Error ? e.message : String(e));
+            throw new Error(`MCP tool "${call.name}" failed: ${msg}`);
+          }
           const geminiPayload = callToolResultToGeminiResponse(mcpResult);
           responseParts.push({
             functionResponse: {
@@ -80,6 +97,9 @@ export class GeminiMcpBridge {
       }
 
       throw new Error(`Tool loop exceeded ${MAX_TOOL_ROUNDS} rounds`);
+    } catch (e) {
+      const msg = redactSecrets(e instanceof Error ? e.message : String(e));
+      throw new Error(msg);
     } finally {
       await this.mcp.close();
       log.step("bridge.chat.done");

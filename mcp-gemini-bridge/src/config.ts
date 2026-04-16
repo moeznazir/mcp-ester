@@ -18,6 +18,20 @@ export interface BridgeEnv {
   /** stdio transport only */
   mcpStdioCommand: string;
   mcpStdioArgs: string[];
+  /** Optional Xano login URL — when set, username/password required */
+  xanoAuthEndpoint: string;
+  xanoUsername: string;
+  xanoPassword: string;
+  /** Default TTL when login response has no expires_in */
+  tokenExpirySeconds: number;
+  /** Optional refresh URL */
+  xanoRefreshEndpoint: string;
+  /** Optional JSON template for refresh POST body; use {{REFRESH_TOKEN}} */
+  xanoRefreshBodyTemplate: string;
+  /** Optional JSON for login; {{USERNAME}} / {{PASSWORD}} */
+  xanoAuthLoginBodyTemplate: string;
+  /** Field name for username in default login JSON (default `email`) */
+  xanoAuthUserField: string;
 }
 
 function requireNonEmpty(name: string, value: string | undefined): string {
@@ -67,6 +81,26 @@ export function loadConfig(): BridgeEnv {
     mcpStdioCommand = requireNonEmpty("MCP_STDIO_COMMAND", mcpStdioCommand);
   }
 
+  const xanoAuthEndpoint = (process.env.XANO_AUTH_ENDPOINT ?? "").trim();
+  const xanoUsername = (process.env.XANO_USERNAME ?? "").trim();
+  const xanoPassword = (process.env.XANO_PASSWORD ?? "").trim();
+  const tokenExpirySecondsRaw = process.env.TOKEN_EXPIRY_SECONDS;
+  let tokenExpirySeconds = 3600;
+  if (tokenExpirySecondsRaw != null && String(tokenExpirySecondsRaw).trim() !== "") {
+    const n = parseInt(String(tokenExpirySecondsRaw), 10);
+    tokenExpirySeconds = Number.isFinite(n) ? Math.max(60, n) : 3600;
+  }
+
+  const xanoRefreshEndpoint = (process.env.XANO_REFRESH_ENDPOINT ?? "").trim();
+  const xanoRefreshBodyTemplate = (process.env.XANO_REFRESH_BODY ?? "").trim();
+  const xanoAuthLoginBodyTemplate = (process.env.XANO_AUTH_LOGIN_BODY ?? "").trim();
+  const xanoAuthUserField = (process.env.XANO_AUTH_USER_FIELD ?? "email").trim() || "email";
+
+  if (xanoAuthEndpoint) {
+    requireNonEmpty("XANO_USERNAME", xanoUsername);
+    requireNonEmpty("XANO_PASSWORD", xanoPassword);
+  }
+
   log.step("config.loaded", {
     xanoMcpUrl: maskUrl(xanoMcpUrl),
     hasXanoApiKey: Boolean(xanoApiKey),
@@ -74,6 +108,8 @@ export function loadConfig(): BridgeEnv {
     xanoAuthMode,
     geminiModel,
     mcpStdioCommand: mcpTransport === "stdio" ? mcpStdioCommand : undefined,
+    xanoAuthEnabled: Boolean(xanoAuthEndpoint),
+    tokenExpirySeconds,
   });
 
   return {
@@ -85,10 +121,18 @@ export function loadConfig(): BridgeEnv {
     geminiModel,
     mcpStdioCommand,
     mcpStdioArgs,
+    xanoAuthEndpoint,
+    xanoUsername,
+    xanoPassword,
+    tokenExpirySeconds,
+    xanoRefreshEndpoint,
+    xanoRefreshBodyTemplate,
+    xanoAuthLoginBodyTemplate,
+    xanoAuthUserField,
   };
 }
 
-function maskUrl(u: string): string {
+export function maskUrl(u: string): string {
   try {
     const url = new URL(u);
     return `${url.protocol}//${url.host}${url.pathname}`;
@@ -97,15 +141,25 @@ function maskUrl(u: string): string {
   }
 }
 
-export function authHeaders(cfg: BridgeEnv): Record<string, string> {
+/**
+ * Static headers for MCP HTTP transports. When password login is configured,
+ * `Authorization: Bearer` is added by the authenticated fetch + AuthSession, not here.
+ */
+export function mcpStaticHeaders(cfg: BridgeEnv): Record<string, string> {
   const h: Record<string, string> = {
     Accept: "application/json, text/event-stream",
   };
+  const passwordAuth = Boolean(cfg.xanoAuthEndpoint);
   if (!cfg.xanoApiKey) return h;
   if (cfg.xanoAuthMode === "apikey") {
     h["X-API-Key"] = cfg.xanoApiKey;
-  } else {
+  } else if (!passwordAuth) {
     h.Authorization = `Bearer ${cfg.xanoApiKey}`;
   }
   return h;
+}
+
+/** @deprecated use {@link mcpStaticHeaders} */
+export function authHeaders(cfg: BridgeEnv): Record<string, string> {
+  return mcpStaticHeaders(cfg);
 }
